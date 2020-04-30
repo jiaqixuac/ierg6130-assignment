@@ -71,9 +71,13 @@ class BaseTrainer:
         #   2. Remember to check the shape of action and log prob.
         #   3. When deterministic is True, return the action with maximum
         #    probability
-        actions = None
-        action_log_probs = None
-        pass
+        m = Categorical(logits=logits)
+        if deterministic:
+            actions = torch.argmax(logits, dim=-1)
+        else:
+            actions = m.sample()
+        action_log_probs = m.log_prob(actions)
+        assert actions.shape == action_log_probs.shape # by jqxu
 
         return values.view(-1, 1), actions.view(-1, 1), action_log_probs.view(
             -1, 1)
@@ -85,9 +89,13 @@ class BaseTrainer:
         # [TODO] Get the log probability of specified action, and the entropy of
         #  current distribution w.r.t. the output logits.
         # Hint: Use proper distribution to help you
-        action_log_probs = None
-        dist_entropy = None
-        pass
+        m = Categorical(logits=logits)
+#         print('\n***** ||')
+#         print(act.shape)
+#         print('***** ||\n')
+        assert len(act.shape) == 2 and act.size(1) == 1 #by jqxu
+        action_log_probs = m.log_prob(act.view(-1))
+        dist_entropy = m.entropy().mean()
 
         assert dist_entropy.shape == ()
         return values.view(-1, 1), action_log_probs.view(-1, 1), dist_entropy

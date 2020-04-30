@@ -11,6 +11,8 @@ of Information Engineering, The Chinese University of Hong Kong. Course
 Instructor: Professor ZHOU Bolei. Assignment author: PENG Zhenghao.
 """
 import argparse
+import os
+import shutil
 from collections import deque
 
 import gym
@@ -72,6 +74,24 @@ parser.add_argument(
          "'CartPole-v0', 'CompetitivePongTournament-v0']. "
          "Default: CompetitivePong-v0"
 )
+parser.add_argument(
+    "--resume",
+    default="",
+    type=str,
+    help="Resume training"
+)
+parser.add_argument(
+    "--finetune",
+    action='store_true', 
+    default=False,
+    help="Finetune using RULE_BASED, ALPHA_PONG, OLD_RULE and OLD_TOUR"
+)
+parser.add_argument(
+    "--self-play",
+    action='store_true', 
+    default=False,
+    help="Self-play with OLD_TOUR"
+)
 args = parser.parse_args()
 
 
@@ -123,12 +143,31 @@ def train(args):
     if tournament:
         assert algo == "PPO", "Using PPO in tournament is a good idea, " \
                               "because of its efficiency compared to A2C."
+    
+    if args.finetune:
+        # by jqxu
+        assert tournament
+        import random
+        candidate_agents = ("RULE_BASED", "ALPHA_PONG", "OLD_TOUR", "OLD_RULE", "OLD_TOUR")
+        print("\n** Finetune using: {}\n".format(candidate_agents))
+        agent_name = random.choice(candidate_agents)
+        envs.reset_opponent(agent_name=agent_name)
 
     # Setup trainer
     if algo == "PPO":
         trainer = PPOTrainer(envs, config, frame_stack, _test=test)
     else:
         trainer = A2CTrainer(envs, config, frame_stack, _test=test)
+    
+    if args.resume:
+        # by jqxu
+        assert os.path.isfile(args.resume), "\n** No such checkpoint: {}\n".format(args.resume)
+        state_dict = torch.load(
+            args.resume,
+            torch.device('cpu') if not torch.cuda.is_available() else None
+        )
+        trainer.model.load_state_dict(state_dict["model"])
+        print("\n** Resume training from: {}\n".format(args.resume))
 
     # Create a placeholder tensor to help stack frames in 2nd dimension
     # That is turn the observation from shape [num_envs, 1, 84, 84] to
@@ -163,10 +202,10 @@ def train(args):
                 #   1. Remember to disable gradient computing
                 #   2. trainer.rollouts is a storage containing all data
                 #   3. What observation is needed for trainer.compute_action?
-                values = None
-                actions = None
-                action_log_prob = None
-                pass
+                with torch.no_grad():
+                    values, actions, action_log_prob = trainer.compute_action(
+                        # trainer.rollouts.observations[index]
+                        frame_stack_tensor.get(), deterministic=False)
 
                 cpu_actions = actions.view(-1).cpu().numpy()
 
@@ -200,9 +239,19 @@ def train(args):
             trainer.rollouts.after_update()
 
         # ===== Reset opponent if in tournament mode =====
-        if tournament and iteration % config.num_steps == 0:
+        if tournament and iteration % min(config.num_steps, 10) == 0:
             # Randomly choose one agent in each iteration
-            envs.reset_opponent()
+            if args.finetune:
+                # by jqxu
+                agent_name = random.choice(candidate_agents)
+                while (agent_name == envs.current_agent_name):
+                    agent_name = random.choice(candidate_agents)
+                envs.reset_opponent(agent_name=agent_name)
+            else:
+                envs.reset_opponent()
+                while envs.current_agent_name in ("ALPHA_PONG", "OLD_RULE", "OLD_TOUR"):
+                    envs.reset_opponent()
+            print("Change opponent to: {}".format(envs.current_agent_name))
 
         # ===== Evaluate Current Policy =====
         if iteration % config.eval_freq == 0:
@@ -265,9 +314,18 @@ def train(args):
             print("Saved trainer state at <{}>. Saved progress at <{}>.".format(
                 trainer_path, progress_path
             ))
+        
+        if tournament and iteration % 400 == 0:
+            # by jqxu
+            if args.self_play and os.path.isfile(trainer_path):
+                old_tour_path = "/home/jqxu/course/ierg6130/assignment/competitive-pong/resources/checkpoint-oldtour.pkl"
+                shutil.copyfile(trainer_path, old_tour_path)
+                envs.reload_opponent("OLD_TOUR")
+                print("Self-play copy checkpoint \n\tfrom\t{} \n\tto\t{} \nand reload".format(trainer_path, old_tour_path))
 
         # [TODO] Stop training when total_steps is greater than args.max_steps
-        pass
+        if total_steps > args.max_steps:
+            break
 
         iteration += 1
 
